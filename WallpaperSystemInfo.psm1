@@ -154,97 +154,126 @@ function Add-TextToImage {
     
     Write-LogMessage -LogLevel "Information" -Message "Starting Add-TextToImage function"
     
-    # Get machine information
-    $machineName = $env:COMPUTERNAME
-    $serialNumber = (Get-CimInstance -Query "SELECT * FROM Win32_BIOS").SerialNumber
-    $windowsBuild = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuild
-    $roleType = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Workstation\Build").RoleType
+    try {
+        # Get machine information
+        Write-LogMessage -LogLevel "Information" -Message "Gathering system information"
+        $machineName = $env:COMPUTERNAME
+        $serialNumber = (Get-CimInstance -Query "SELECT * FROM Win32_BIOS").SerialNumber
+        $windowsBuild = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuild
+        
+        # Handle potential registry access issues
+        try {
+            $roleType = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Workstation\Build").RoleType
+        } catch {
+            Write-LogMessage -LogLevel "Warning" -Message "Could not retrieve RoleType: $($_.Exception.Message)"
+            $roleType = "Unknown"
+        }
 
-    # Additional machine information variables
-    $LastBootUpTime = (Get-CimInstance -ClassName Win32_OperatingSystem).LastBootUpTime
-    $SystemUpTime = (Get-Date) - $LastBootUpTime
-    $Days = $SystemUpTime.Days
-    $Hours = $SystemUpTime.Hours
-    $Minutes = $SystemUpTime.Minutes
-    $Seconds = $SystemUpTime.Seconds
-    $uptime = "$Days days, $Hours hours, $Minutes minutes"
-    $domainName = (Get-CimInstance -ClassName Win32_ComputerSystem).Domain 
-    $ipAddress = (Get-CimInstance -Query "SELECT IPAddress FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = True").IPAddress | Where-Object { $_ -match '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$' } | Select-Object -First 1
+        # Additional machine information variables
+        $LastBootUpTime = (Get-CimInstance -ClassName Win32_OperatingSystem).LastBootUpTime
+        $SystemUpTime = (Get-Date) - $LastBootUpTime
+        $Days = $SystemUpTime.Days
+        $Hours = $SystemUpTime.Hours
+        $Minutes = $SystemUpTime.Minutes
+        $Seconds = $SystemUpTime.Seconds
+        $uptime = "$Days days, $Hours hours, $Minutes minutes"
+        $domainName = (Get-CimInstance -ClassName Win32_ComputerSystem).Domain 
+        $ipAddress = (Get-CimInstance -Query "SELECT IPAddress FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = True").IPAddress | Where-Object { $_ -match '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$' } | Select-Object -First 1
 
-    # Get the current logon user
-    $currentLogonUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        # Get the current logon user
+        $currentLogonUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
-    # Create a hashtable to store the variable names and their corresponding values
-    $variables = [ordered]@{
-        "Uptime "        = $uptime
-        "Current User "  = $currentLogonUser
-        "Machine Name "  = $machineName
-        "Serial Number " = $serialNumber
-        "Windows Build " = $windowsBuild
-        "Role Type "     = $roleType
-        "Domain Name "   = $domainName
-        "IP Address "    = $ipAddress
+        Write-LogMessage -LogLevel "Information" -Message "System information gathered successfully"
+
+        # Create a hashtable to store the variable names and their corresponding values
+        $variables = [ordered]@{
+            "Uptime "        = $uptime
+            "Current User "  = $currentLogonUser
+            "Machine Name "  = $machineName
+            "Serial Number " = $serialNumber
+            "Windows Build " = $windowsBuild
+            "Role Type "     = $roleType
+            "Domain Name "   = $domainName
+            "IP Address "    = $ipAddress
+        }
+
+        Write-LogMessage -LogLevel "Information" -Message "Loading background image: $BackgroundImagePath"
+        # Create a new Graphics object
+        $image = [System.Drawing.Image]::FromFile($BackgroundImagePath)
+        $graphic = [System.Drawing.Graphics]::FromImage($image)
+
+        # Set the font properties
+        $font = New-Object System.Drawing.Font($FontName, $Size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+        $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+
+        # Set anti-aliasing
+        if ($AntiAlias) {
+            $graphic.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        }
+       
+        Write-LogMessage -LogLevel "Information" -Message "Rendering text overlay on image"
+        # Dynamically calculate starting positions based on image dimensions
+        $marginRight = 50
+        $marginTop = 50
+        $positionX = $image.Width - $marginRight - 400
+        if ($positionX -lt 0) { $positionX = $marginRight }
+        $positionY = $marginTop
+
+        foreach ($variable in $variables.GetEnumerator()) {
+            $variableName = $variable.Key
+            $variableValue = $variable.Value
+
+            # Draw the text
+            $position = New-Object System.Drawing.PointF($positionX, $positionY)
+            $graphic.DrawString("${variableName}: $variableValue", $font, $brush, $position)
+
+            # Increase the Y position for the next variable
+            $positionY += 20
+        }
+
+        Write-LogMessage -LogLevel "Information" -Message "Saving modified image to: $OutputImagePath"
+        # Save the modified image
+        $image.Save($OutputImagePath)
+
+        # Clean up
+        $graphic.Dispose()
+        $font.Dispose()
+        $brush.Dispose()
+
+        # Set the wallpaper and refresh desktop only if -SetAsDesktopBackground is specified
+        if ($SetAsDesktopBackground) {
+            Write-LogMessage -LogLevel "Information" -Message "Setting image as desktop background"
+            
+            # Set the wallpaper path in the registry
+            Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name Wallpaper -Value $OutputImagePath
+
+            # Set the wallpaper style in the registry
+            Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name WallpaperStyle -Value 2
+
+            # Refresh the desktop
+            $user32Dll = Add-Type -MemberDefinition @"
+                [DllImport("user32.dll", CharSet = CharSet.Auto)]
+                public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
+"@ -Name "User32Dll" -Namespace "User32" -PassThru
+
+            $SPI_SETDESKWALLPAPER = 20
+            $SPIF_UPDATEINIFILE = 0x01
+            $SPIF_SENDCHANGE = 0x02
+            $result = $user32Dll::SystemParametersInfo($SPI_SETDESKWALLPAPER, 0, $OutputImagePath, $SPIF_UPDATEINIFILE -bor $SPIF_SENDCHANGE)
+            
+            if ($result -eq 0) {
+                Write-LogMessage -LogLevel "Warning" -Message "Failed to set desktop background via SystemParametersInfo"
+            } else {
+                Write-LogMessage -LogLevel "Information" -Message "Desktop background set successfully"
+            }
+        }
+
+        Write-LogMessage -LogLevel "Information" -Message "Add-TextToImage function completed successfully"
+        
+    } catch {
+        Write-LogMessage -LogLevel "Error" -Message "Add-TextToImage function failed: $($_.Exception.Message)"
+        throw
     }
-
-  
-    # Create a new Graphics object
-    $image = [System.Drawing.Image]::FromFile($BackgroundImagePath)
-    $graphic = [System.Drawing.Graphics]::FromImage($image)
-
-    # Set the font properties
-    $font = New-Object System.Drawing.Font($FontName, $Size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
-    $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-
-    # Set anti-aliasing
-    if ($AntiAlias) {
-        $graphic.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    }
-   
-    # Dynamically calculate starting positions based on image dimensions
-    $marginRight = 50
-    $marginTop = 50
-    $positionX = $image.Width - $marginRight - 400
-    if ($positionX -lt 0) { $positionX = $marginRight }
-    $positionY = $marginTop
-
-    foreach ($variable in $variables.GetEnumerator()) {
-        $variableName = $variable.Key
-        $variableValue = $variable.Value
-
-        # Draw the text
-        $position = New-Object System.Drawing.PointF($positionX, $positionY)
-        $graphic.DrawString("${variableName}: $variableValue", $font, $brush, $position)
-
-        # Increase the Y position for the next variable
-        $positionY += 20
-    }
-
-    # Save the modified image
-    $image.Save($OutputImagePath)
-
-    # Clean up
-    $graphic.Dispose()
-    $font.Dispose()
-    $brush.Dispose()
-
-    # Set the wallpaper and refresh desktop only if -SetAsDesktopBackground is specified
-    if ($SetAsDesktopBackground) {
-        # Set the wallpaper path in the registry
-        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name Wallpaper -Value $OutputImagePath
-
-        # Set the wallpaper style in the registry
-        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name WallpaperStyle -Value 2
-
-        # Refresh the desktop
-        $user32Dll = Add-Type -MemberDefinition @"
-            [DllImport("user32.dll", CharSet = CharSet.Auto)]
-        $SPI_SETDESKWALLPAPER = 20
-        $SPIF_UPDATEINIFILE = 0x01
-        $SPIF_SENDCHANGE = 0x02
-        $SPI_SETDESKWALLPAPER = 20
-        $SPIF_UPDATEINIFILE = 0x01
-        $SPIF_SENDCHANGE = 0x02
-        $user32Dll::SystemParametersInfo($SPI_SETDESKWALLPAPER, 0, $OutputImagePath, $SPIF_UPDATEINIFILE -bor $SPIF_SENDCHANGE)
 }
 
 # Export module functions for public use

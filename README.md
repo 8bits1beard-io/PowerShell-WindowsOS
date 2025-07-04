@@ -7,7 +7,6 @@ A comprehensive collection of PowerShell scripts and modules for Windows OS admi
 ### 📁 Scripts
 | Script | Description |
 |--------|-------------|
-| `Set-EntraGroupDistribution.ps1` | Interactively distributes device members from a source Entra group to target groups based on specified percentages |
 | `Test-WMICorruption.ps1` | Detects and reports corrupt Windows Management Instrumentation (WMI) components |
 
 ### 📁 Modules
